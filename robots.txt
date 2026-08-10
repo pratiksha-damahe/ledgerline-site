@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://www.ledgerline.example/sitemap.xml
+Sitemap: https://ledgerline.example/sitemap.xml

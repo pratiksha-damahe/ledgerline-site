@@ -2,7 +2,7 @@
   "name": "ledgerline-site",
   "version": "1.0.0",
   "private": true,
-  "description": "Hand-built multi-page marketing site for Ledgerline (fictional B2B invoice automation SaaS).",
+  "description": "Hand-built, no-framework marketing site for Ledgerline (fictional B2B invoice/approval automation software).",
   "scripts": {
     "build": "node build.js"
   }

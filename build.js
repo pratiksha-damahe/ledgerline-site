@@ -1,76 +1,103 @@
-#!/usr/bin/env node
-/**
- * Ledgerline static build.
- *
- * Why this exists: the task requires "shared components and a structure a
- * content team could extend without touching layout code" while forbidding
- * page builders. This script is the smallest thing that satisfies both —
- * header/footer/nav live in /partials once, each page in /pages is just its
- * <head> metadata + main content, and this script stitches them together at
- * build time. No client-side framework, no runtime cost, output is plain
- * static HTML that ships to /dist.
- *
- * A content editor adding a 5th page:
- *   1. Copy /pages/_template.html to /pages/new-page.html
- *   2. Fill in <title>, meta description, OG tags, JSON-LD, and the <main> content
- *   3. Add one <li> to partials/header.html for the nav link
- *   4. Run `node build.js`
- * They never touch CSS, the footer, or the nav markup logic.
- */
+// build.js
+// Stitches /partials into each /pages/*.html and outputs static HTML,
+// plus /css and /js, into /dist. No dependencies, no bundler.
+//
+// Usage: node build.js
+
 const fs = require("fs");
 const path = require("path");
 
 const ROOT = __dirname;
+const DIST = path.join(ROOT, "dist");
 const PAGES_DIR = path.join(ROOT, "pages");
 const PARTIALS_DIR = path.join(ROOT, "partials");
-const DIST_DIR = path.join(ROOT, "dist");
 
-const header = fs.readFileSync(path.join(PARTIALS_DIR, "header.html"), "utf8");
-const footer = fs.readFileSync(path.join(PARTIALS_DIR, "footer.html"), "utf8");
+const template = fs.readFileSync(path.join(ROOT, "template.html"), "utf8");
+const headerSrc = fs.readFileSync(path.join(PARTIALS_DIR, "header.html"), "utf8");
+const footerSrc = fs.readFileSync(path.join(PARTIALS_DIR, "footer.html"), "utf8");
 
-function copyStatic() {
-  for (const dir of ["css", "js"]) {
-    const src = path.join(ROOT, dir);
-    const dest = path.join(DIST_DIR, dir);
-    fs.mkdirSync(dest, { recursive: true });
-    for (const file of fs.readdirSync(src)) {
-      fs.copyFileSync(path.join(src, file), path.join(dest, file));
-    }
+function extract(section, html) {
+  const re = new RegExp(`<!--${section}-->([\\s\\S]*?)<!--\\/${section}-->`);
+  const match = html.match(re);
+  if (!match) {
+    throw new Error(`Missing <!--${section}-->...<!--/${section}--> block`);
   }
-  for (const file of ["robots.txt", "sitemap.xml"]) {
-    const src = path.join(ROOT, file);
-    if (fs.existsSync(src)) fs.copyFileSync(src, path.join(DIST_DIR, file));
-  }
+  return match[1].trim();
 }
 
-function markActiveNav(headerHtml, slug) {
-  // slug e.g. "home", "product", "pricing", "contact"
+function markActiveNav(headerHtml, pageKey) {
+  // Adds aria-current="page" to the <a data-nav="pageKey"> link, and makes
+  // sure no other link carries it (in case a partial gets hand-edited).
   return headerHtml.replace(
-    new RegExp(`data-nav="${slug}"`),
-    `data-nav="${slug}" aria-current="page"`
+    /<a href="([^"]*)" data-nav="([^"]+)">/g,
+    (full, href, key) => {
+      const current = key === pageKey ? ' aria-current="page"' : "";
+      return `<a href="${href}" data-nav="${key}"${current}>`;
+    }
   );
 }
 
+function copyDir(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, entry.name);
+    const d = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDir(s, d);
+    } else {
+      fs.copyFileSync(s, d);
+    }
+  }
+}
+
 function build() {
-  fs.mkdirSync(DIST_DIR, { recursive: true });
-  copyStatic();
+  fs.rmSync(DIST, { recursive: true, force: true });
+  fs.mkdirSync(DIST, { recursive: true });
 
   const pageFiles = fs
     .readdirSync(PAGES_DIR)
     .filter((f) => f.endsWith(".html") && !f.startsWith("_"));
 
+  let builtCount = 0;
+  const headingIssues = [];
+
   for (const file of pageFiles) {
-    const slug = path.basename(file, ".html"); // home | product | pricing | contact
     const raw = fs.readFileSync(path.join(PAGES_DIR, file), "utf8");
-    const scopedHeader = markActiveNav(header, slug);
+    const head = extract("HEAD", raw);
+    const main = extract("MAIN", raw);
 
-    const html = raw
-      .replace("{{HEADER}}", scopedHeader)
-      .replace("{{FOOTER}}", footer);
+    const pageKey = file === "home.html" ? "home" : file.replace(".html", "");
+    const header = markActiveNav(headerSrc, pageKey);
 
-    const outName = slug === "home" ? "index.html" : `${slug}.html`;
-    fs.writeFileSync(path.join(DIST_DIR, outName), html);
-    console.log(`built dist/${outName}`);
+    let out = template
+      .replace("{{HEAD}}", head)
+      .replace("{{HEADER}}", header)
+      .replace("{{MAIN}}", main)
+      .replace("{{FOOTER}}", footerSrc);
+
+    // Heading audit: exactly one <h1> per page.
+    const h1Count = (out.match(/<h1[ >]/g) || []).length;
+    if (h1Count !== 1) {
+      headingIssues.push(`${file}: expected exactly one <h1>, found ${h1Count}`);
+    }
+
+    const outName = file === "home.html" ? "index.html" : file;
+    fs.writeFileSync(path.join(DIST, outName), out);
+    builtCount += 1;
+  }
+
+  copyDir(path.join(ROOT, "css"), path.join(DIST, "css"));
+  copyDir(path.join(ROOT, "js"), path.join(DIST, "js"));
+
+  for (const extra of ["robots.txt", "sitemap.xml"]) {
+    const p = path.join(ROOT, extra);
+    if (fs.existsSync(p)) fs.copyFileSync(p, path.join(DIST, extra));
+  }
+
+  console.log(`Built ${builtCount} page(s) into /dist`);
+  if (headingIssues.length) {
+    console.warn("Heading audit warnings:");
+    headingIssues.forEach((msg) => console.warn(`  - ${msg}`));
   }
 }
 
